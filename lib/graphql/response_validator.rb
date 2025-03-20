@@ -153,7 +153,7 @@ module GraphQL
     def resolved_type(parent_type, data_part, path)
       return parent_type unless parent_type.kind.abstract?
     
-      typename = data_part["__typename"] || data_part[@system_typename]
+      typename = data_part[@system_typename] || data_part["__typename"]
       if typename.nil?
         @errors << ValidationError.new("Abstract position expects `__typename` or system typename hint", path.dup)
         return nil
