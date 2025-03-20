@@ -7,8 +7,8 @@ Gem::Specification.new do |spec|
   spec.name          = "graphql-response_validator"
   spec.version       = GraphQL::ResponseValidator::VERSION
   spec.authors       = ["Greg MacWilliam"]
-  spec.summary       = "Validate that a GraphQL response fixture matches its test query."
-  spec.description   = "Validate that a GraphQL response fixture matches its test query."
+  spec.summary       = "Validate that GraphQL response fixtures match their test queries."
+  spec.description   = "Validate that GraphQL response fixtures match their test queries."
   spec.homepage      = "https://github.com/gmac/graphql-response_validator"
   spec.license       = "MIT"
 

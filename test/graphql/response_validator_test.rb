@@ -22,7 +22,7 @@ describe "GraphQL::ResponseValidator" do
   def test_invalid_for_bad_selections
     query = %|{ widget { nope } }|
 
-    assert_invalid(query, { "widget" => { "nope" => true } }) do |error|
+    assert_invalid(query, { "widget" => { "nope" => true } }, validate: false) do |error|
       assert_equal "Invalid selection of `Widget.nope` at `widget.nope`", error
     end
   end
@@ -259,20 +259,56 @@ describe "GraphQL::ResponseValidator" do
     end
   end
 
+  def test_selected_operation
+    request = %|
+      query GetWidget { 
+        widget { diameter }
+      }
+      query GetRedHerring { 
+        redHerring { id }
+      }
+    |
+
+    response1 = {
+      "data" => {
+        "widget" => { 
+          "diameter" => 23,
+        },
+      },
+    }
+    
+    query = GraphQL::Query.new(TestSchema, query: request, operation_name: "GetWidget")
+    fixture = GraphQL::ResponseValidator.new(query, response1)
+    assert fixture.valid?, fixture.errors.first&.message
+    
+    response2 = {
+      "data" => {
+        "redHerring" => { 
+          "id" => "1",
+        },
+      },
+    }
+
+    query = GraphQL::Query.new(TestSchema, query: request, operation_name: "GetRedHerring")
+    fixture = GraphQL::ResponseValidator.new(query, response2)
+    assert fixture.valid?, fixture.errors.first&.message
+  end
+
   private
 
-  def build_fixture(query_string, data)
+  def build_fixture(query_string, data, validate: true)
     query = GraphQL::Query.new(TestSchema, query: query_string)
+    assert query.static_errors.none?, query.static_errors.map(&:message).join("\n") if validate
     GraphQL::ResponseValidator.new(query, { "data" => data })
   end
 
-  def assert_valid(query_string, data)
-    fixture = build_fixture(query_string, data)
+  def assert_valid(query_string, data, validate: true)
+    fixture = build_fixture(query_string, data, validate: validate)
     assert fixture.valid?, format_error_message(fixture.errors.first)
   end
 
-  def assert_invalid(query_string, data)
-    fixture = build_fixture(query_string, data)
+  def assert_invalid(query_string, data, validate: true)
+    fixture = build_fixture(query_string, data, validate: validate)
     assert !fixture.valid?, "Expected fixture to be invalid"
     yield(format_error_message(fixture.errors.first)) if block_given?
   end
