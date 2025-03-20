@@ -6,6 +6,12 @@ Testing GraphQL queries using fixture responses runs the risk of false-positive 
 gem "graphql-response_validator"
 ```
 
+Then:
+
+```shell
+require "graphql/response_validator"
+```
+
 ## Usage
 
 Build a test query and its response data into a `GraphQL::ResponseValidator`, then assert that the fixture is correct for the query as part of your test:
