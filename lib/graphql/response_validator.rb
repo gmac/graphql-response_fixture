@@ -3,7 +3,9 @@
 require "graphql"
 
 module GraphQL
-  class ResponseFixture
+  class ResponseValidator
+    ValidationError = Struct.new(:message, :path)
+
     SYSTEM_TYPENAME = "__typename__"
     SCALAR_VALIDATORS = {
       "Boolean" => -> (data) { data.is_a?(TrueClass) || data.is_a?(FalseClass) },
@@ -14,9 +16,7 @@ module GraphQL
       "String" => -> (data) { data.is_a?(String) },
     }.freeze
   
-    class ResponseFixtureError < StandardError; end
-  
-    attr_reader :error_message
+    attr_reader :errors
   
     def initialize(
       query,
@@ -26,8 +26,8 @@ module GraphQL
     )
       @query = query
       @data = data
+      @errors = []
       @valid = nil
-      @error_message = nil
       @scalar_validators = scalar_validators
       @system_typename = system_typename
       @system_typenames = Set.new
@@ -38,14 +38,12 @@ module GraphQL
     
       op = @query.selected_operation
       parent_type = @query.root_type_for_operation(op.operation_type)
-      validate_selections(parent_type, op, @data)
-      @valid = true
-    rescue ResponseFixtureError => e
-      @error_message = e.message
-      @valid = false
+      validate_selections(parent_type, op, @data["data"])
+      @valid = @errors.none?
     end
   
     def prune!
+      valid?
       @system_typenames.each { _1.delete(@system_typename) }
       self
     end
@@ -58,60 +56,82 @@ module GraphQL
   
     def validate_selections(parent_type, parent_node, data_part, path = [])
       if parent_type.non_null?
-        raise ResponseFixtureError, "Expected non-null selection `#{path.join(".")}` to provide value" if data_part.nil?
-        return validate_selections(parent_type.of_type, parent_node, data_part, path)
+        if !data_part.nil?
+          return validate_selections(parent_type.of_type, parent_node, data_part, path)
+        else
+          @errors << ValidationError.new("Expected non-null selection to provide value", path.dup)
+          return false
+        end
     
       elsif data_part.nil?
         # nullable node with a null value is okay
         return true
     
       elsif parent_type.list?
-        raise ResponseFixtureError, "Expected list selection `#{path.join(".")}` to provide Array" unless data_part.is_a?(Array)
-        return data_part.all? { |item| validate_selections(parent_type.of_type, parent_node, item, path) }
+        if data_part.is_a?(Array)
+          return data_part.all? { |item| validate_selections(parent_type.of_type, parent_node, item, path) }
+        else
+          @errors << ValidationError.new("Expected list selection to provide Array", path.dup)
+          return false
+        end
         
       elsif parent_type.kind.leaf?
         return validate_leaf(parent_type, data_part, path)
     
       elsif !data_part.is_a?(Hash)
-        raise ResponseFixtureError, "Expected composite selection `#{path.join(".")}` to provide Hash"
+        @errors << ValidationError.new("Expected composite selection to provide Hash", path.dup)
+        return false
       end
     
       parent_node.selections.all? do |node|
         case node
         when GraphQL::Language::Nodes::Field
-          field_name = node.alias || node.name
-          path << field_name
-          raise ResponseFixtureError, "Expected data to provide field `#{path.join(".")}`" unless data_part.key?(path.last)
-          
-          next_value = data_part[path.last]
-          next_type = if node.name == "__typename"
-            annotation_type = @query.get_type(data_part[field_name])
-            unless annotation_type && @query.possible_types(parent_type).include?(annotation_type)
-              raise ResponseFixtureError, "Expected selection `#{path.join(".")}` to provide a possible type name of `#{parent_type.graphql_name}`"
+          begin
+            path << (node.alias || node.name)
+            unless data_part.key?(path.last)
+              @errors << ValidationError.new("Expected data to provide field", path.dup)
+              next false
+            end
+            
+            next_value = data_part[path.last]
+            next_type = if node.name == "__typename"
+              annotation_type = @query.get_type(data_part[path.last])
+              unless annotation_type && @query.possible_types(parent_type).include?(annotation_type)
+                @errors << ValidationError.new("Expected selection to provide a possible type name of `#{parent_type.graphql_name}`", path.dup)
+                next false
+              end
+
+              @query.get_type("String")
+            else
+              @query.get_field(parent_type, node.name)&.type
             end
 
-            @query.get_type("String")
-          else
-            @query.get_field(parent_type, node.name)&.type
-          end
-          raise ResponseFixtureError, "Invalid selection for `#{parent_type.graphql_name}.#{node.name}`" unless next_type
+            unless next_type
+              @errors << ValidationError.new("Invalid selection of `#{parent_type.graphql_name}.#{node.name}`", path.dup)
+              next false
+            end
 
-          result = validate_selections(next_type, node, next_value, path)
-          path.pop
-          result
+            validate_selections(next_type, node, next_value, path)
+          ensure
+            path.pop
+          end
       
         when GraphQL::Language::Nodes::InlineFragment
           resolved_type = resolved_type(parent_type, data_part, path)
+          next false if resolved_type.nil?
+
           fragment_type = node.type.nil? ? parent_type : @query.get_type(node.type.name)
-          return true unless @query.possible_types(fragment_type).include?(resolved_type)
+          next true unless @query.possible_types(fragment_type).include?(resolved_type)
       
           validate_selections(fragment_type, node, data_part, path)
       
         when GraphQL::Language::Nodes::FragmentSpread
           resolved_type = resolved_type(parent_type, data_part, path)
+          next false if resolved_type.nil?
+
           fragment_def = @query.fragments[node.name]
           fragment_type = @query.get_type(fragment_def.type.name)
-          return true unless @query.possible_types(fragment_type).include?(resolved_type)
+          next true unless @query.possible_types(fragment_type).include?(resolved_type)
       
           validate_selections(fragment_type, fragment_def, data_part, path)
         end
@@ -126,10 +146,8 @@ module GraphQL
         validator.nil? || validator.call(value)
       end
     
-      unless valid
-        raise ResponseFixtureError, "Expected `#{path.join(".")}` to provide a valid `#{parent_type.graphql_name}` value"
-      end
-      true
+      @errors << ValidationError.new("Expected a valid `#{parent_type.graphql_name}` value", path.dup) unless valid
+      valid
     end
   
     def resolved_type(parent_type, data_part, path)
@@ -137,16 +155,19 @@ module GraphQL
     
       typename = data_part["__typename"] || data_part[@system_typename]
       if typename.nil?
-        raise ResponseFixtureError, "Abstract position at `#{path.join(".")}` expects `__typename` or system typename hint"
+        @errors << ValidationError.new("Abstract position expects `__typename` or system typename hint", path.dup)
+        return nil
       end
     
       @system_typenames.add(data_part) if data_part.key?(@system_typename)
       annotated_type = @query.get_type(typename)
 
       if annotated_type.nil?
-        raise ResponseFixtureError, "Abstract typename `#{typename}` is not a valid type"
+        @errors << ValidationError.new("Abstract typename `#{typename}` is not a valid type", path.dup)
+        nil
       elsif !@query.possible_types(parent_type).include?(annotated_type)
-        raise ResponseFixtureError, "Abstract type `#{typename}` does not belong to `#{parent_type.graphql_name}`"
+        @errors << ValidationError.new("Abstract type `#{parent_type.graphql_name}` cannot be `#{typename}`", path.dup)
+        nil
       else
         annotated_type
       end
@@ -154,5 +175,4 @@ module GraphQL
   end
 end
 
-require_relative "./response_fixture/repository"
-require_relative "./response_fixture/version"
+require_relative "./response_validator/version"
