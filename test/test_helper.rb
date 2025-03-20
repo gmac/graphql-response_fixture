@@ -13,13 +13,18 @@ class TestSchema < GraphQL::Schema
     graphql_name("JSON")
   end
 
+  module Gadget
+    include GraphQL::Schema::Interface
+    field :id, ID, null: false
+  end
+
   class WidgetHeat < GraphQL::Schema::Enum
     value("SPICY")
     value("MILD")
   end
 
   class Widget < GraphQL::Schema::Object
-    field :id, ID, null: false
+    implements(Gadget)
     field :title, String, null: false
     field :description, String, null: true
     field :weight, Int, null: true
@@ -30,12 +35,16 @@ class TestSchema < GraphQL::Schema
   end
 
   class Sprocket < GraphQL::Schema::Object
-    field :id, ID, null: false
+    implements(Gadget)
     field :length, Int, null: false
     field :width, Int, null: false
   end
 
-  class Thing < GraphQL::Schema::Union
+  class RedHerring < GraphQL::Schema::Object
+    field :id, ID, null: false
+  end
+
+  class Gizmo < GraphQL::Schema::Union
     possible_types(Widget, Sprocket)
   end
 
@@ -43,8 +52,13 @@ class TestSchema < GraphQL::Schema
     field :widget, Widget, null: true
     field :widgets, [Widget, null: true], null: true
 
-    field :thing, Thing, null: false
-    field :things, [Thing, null: false], null: false
+    field :gadget, Gadget, null: false
+    field :gadgets, [Gadget, null: false], null: false
+
+    field :gizmo, Gizmo, null: false
+    field :gizmos, [Gizmo, null: false], null: false
+
+    field :red_herring, RedHerring, null: false
   end
 
   query(Query)
